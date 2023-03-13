@@ -1,0 +1,286 @@
+//@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+//@@
+//@@ A gRPC Interface for bidirectional streaming of IVR data between
+//@@ Freeclimb platform and a given application instance.
+//@@
+//@@ FC serves as the gRPC client, the application as the gRPC server.
+//@@
+//@@ Upon receipt of a phone call, FC will invoke the bidirectional
+//@@ streaming RPC and proceed to asynchornously send to application:
+//@@     (1) notification that call has started
+//@@     (2) notification of real-time audio stream data from the call
+//@@     (3) notification of start of DTMF keypress detected on the call
+//@@     (4) notification of end of DTMF keypress detected on the call
+//@@     (5) notification that requested audio playback has started
+//@@     (6) notification that requested audio playback has completed
+//@@     (7) notification that the audio buffer has been cleared
+//@@     (8) notification that requested DTMF keypress has started
+//@@     (9) notification that requested DTMF keypress has completed
+//@@     (10) notification that the call has ended
+//@@     (11) notification that an error has occurred
+//@@     (10) notification of the depth of the queried buffer
+//@@
+//@@ Application is then free to stream back to FC:
+//@@     (1) instruction to play audio to call
+//@@     (2) instruction to clear contents of audio buffer
+//@@     (3) instruction to press DTMF digit to call
+//@@     (4) instruction to disconnect call
+//@@     (5) instruction to terminate Audio Stream and return to PerCL
+//@@     (6) instruction to query audio and dtmf buffers
+//@@
+//@@ References:
+//@@     * https://developers.google.com/protocol-buffers/docs/proto3
+//@@
+//@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+
+syntax = "proto3";
+package freeclimb;
+
+import "google/protobuf/timestamp.proto";
+
+option java_package = "com.freeclimb.ivr";
+option java_generic_services = true;
+
+service GRPCStreamService {
+  // Bidirectional communication between app and platform
+  rpc SendIVRData(stream PlatformMessage) returns (stream AppMessage) {}
+}
+
+//@@
+//@@ Message definitions for messages from Freeclimb platform --> application
+//@@
+message PlatformMessage {
+  //@@ FC will initiate the bidirectional RPC stream and this will be
+  //@@ the first request message from FC to application to kick things off
+  message NotifyCallStartedMessage {
+    //@@ SIP call ID for the call
+    string call_id = 1;
+
+    //@@ SIP To:
+    string to = 2;
+
+    //@@ SIP From:
+    string from = 3;
+
+    //@@ "true" for inbound call, "false" for outbound
+    bool is_inbound = 4;
+
+    //@@ string(s) containing additional metadata about the call
+    repeated string metadata = 5;
+  }
+
+  //@@ FC will send a stream of these messages to the application in order
+  //@@ to deliver a real-time audio feed from the call over this stream
+  //@@ FC will send audio messages in the format specified in the AudioStream
+  //@@ PerCL command (either `audio/l16;rate=8000` or `audio/mulaw;rate=8000`)
+  //@@ audio/l16;rate=8000    = 320 bytes
+  //@@ audio/mulaw;rate=8000  = 160 bytes
+  message NotifyAudioMessage {
+    bytes audio_data = 1;
+    string content_type = 2;
+    google.protobuf.Timestamp start_tstamp = 3;
+    google.protobuf.Timestamp end_tstamp = 4;
+    uint32 size_bytes = 5;
+    uint32 sequence_num = 6;
+  }
+
+  //@@ FC will send one of these messages to application upon detecting
+  //@@ the start of a DTMF keypress on the call
+  message NotifyDTMFReceivedStartedMessage {
+    string digit = 1;
+    google.protobuf.Timestamp start_tstamp = 2;
+  }
+
+  //@@ FC will send one of these messages to application upon detecting
+  //@@ the end of a DTMF keypress on the call
+  message NotifyDTMFReceivedEndedMessage {
+    string digit = 1;
+    google.protobuf.Timestamp end_tstamp = 3;
+  }
+
+  message NotifyBufferDepthMessage {
+    BufferType buffer_type = 1;
+    uint32 depth = 2;
+    uint32 buffer_size = 3;
+
+    enum BufferType {
+      DTMF = 0;
+      Audio = 1;
+    }
+  }
+
+  //@@ FC will send one of these messages to application upon detecting
+  //@@ call termination
+  message NotifyCallEndedMessage {
+    string call_id = 1;
+    enum ReasonCode {
+      CALLER_DISCONNECT = 0;
+      APPLICATION_DISCONNECT = 1;
+      PLATFORM_DISCONNECT = 2;
+      PLATFORM_ERROR = 3;
+    }
+    //@@ A reason_code for call termination
+    ReasonCode reason_code = 2;
+    //@@ A descriptive string to complement the reason_code
+    string reason = 3;
+  }
+
+  //@@ FC will send one of these messages to application upon starting
+  //@@ to process a prior AppMessage::PlayAudioMessage response received
+  //@@ from the application earlier in the stream
+  message NotifyAudioPlaybackStartedMessage {
+    //@@ id here is the unique id generated and passed in by the
+    //@@ application in a prior AppMessage::PlayAudioMessage response
+    //@@ back to FC on this RPC stream
+    string id = 1;
+    google.protobuf.Timestamp timestamp = 2;
+  }
+
+  //@@ FC will send one of these messages to application upon completing
+  //@@ playback of audio for a prior AppMessage::PlayAudioMessage
+  //@@ response received from the application earlier in the stream
+  message NotifyAudioPlaybackCompletedMessage {
+    //@@ id here is the unique id generated and passed in by the
+    //@@ application in a prior AppMessage::PlayAudioMessage response
+    //@@ back to FC on this RPC stream
+    string id = 1;
+    google.protobuf.Timestamp timestamp = 2;
+  }
+
+  //@@ FC will send one of these messages to application upon completing
+  //@@ the clearing of the current audio buffer contents in response
+  //@@ to receiving a ClearAudioBufferMessage from application
+  message NotifyAudioBufferClearedMessage {
+    //@@ this request will echo back the unique id generated by the
+    //@@ application and passed to FC in a prior ClearAudioBufferMessage
+    string id = 1;
+    google.protobuf.Timestamp timestamp = 2;
+  }
+
+  //@@ FC will send one of these messages to application upon starting
+  //@@ to play the current DTMF buffer contents
+  message NotifyDTMFPlayStartedMessage {
+    //@@ id here is the unique id generated and passed in by the
+    //@@ application in a prior AppMessage::PressDTMFMessage response
+    //@@ back to FC on this RPC stream
+    string id = 1;
+    google.protobuf.Timestamp timestamp = 2;
+  }
+
+  //@@ FC will send one of these messages to application upon completing
+  //@@ a DTMF keypress request for a prior AppMessage::PressDTMFMessage
+  //@@ response back to FC on this RPC stream
+  message NotifyDTMFPlayCompletedMessage {
+    //@@ id here is the unique id generated and passed in by the
+    //@@ application in a prior AppMessage::PressDTMFMessage response
+    //@@ back to FC on this RPC stream
+    string id = 1;
+    google.protobuf.Timestamp timestamp = 2;
+  }
+
+  //@@ FC will send one of these messages in the event that an error has 
+  //@@ occurred. The message should indicate what the issue was and this 
+  //@@ message should be sent temporally close to the message that caused 
+  //@@ the error.
+  message NotifyErrorMessage {
+    string error_message = 1;
+    string error_id = 2;
+  }
+
+  oneof payload {
+    NotifyCallStartedMessage notify_call_started = 1;
+    NotifyAudioMessage notify_audio_data = 2;
+    NotifyDTMFReceivedStartedMessage notify_dtmf_received_start_data = 3;
+    NotifyDTMFReceivedEndedMessage notify_dtmf_received_end_data = 4;
+    NotifyAudioPlaybackStartedMessage notify_playback_started_data = 5;
+    NotifyAudioPlaybackCompletedMessage notify_playback_completed_data = 6;
+    NotifyAudioBufferClearedMessage notify_audio_cleared_data = 7;
+    NotifyDTMFPlayStartedMessage notify_dtmf_play_started_data = 8;
+    NotifyDTMFPlayCompletedMessage notify_dtmf_play_completed_data = 9;
+    NotifyCallEndedMessage notify_call_ended = 10;
+    NotifyErrorMessage notify_error = 11;
+    NotifyBufferDepthMessage notify_buffer = 12;
+  }
+}
+
+//@@
+//@@ Message definitions for messages from application --> Freeclimb platform
+//@@
+message AppMessage {
+  //@@ Response back to FC from application instructing FC to play
+  //@@ audio to the call; the application generated unique id passed
+  //@@ in will be echoed back to application from FC in subsequent
+  //@@ NotifyAudioPlayback[Started|Ended]Message requests to the
+  //@@ application on this RPC stream
+  //@@
+  //@@ This must be the same content-type as defined in the inital PerCL message
+  //@@ which establishes the AudioStream
+  message PlayAudioMessage {
+    string id = 1;
+    bytes audio_data = 2;
+    string content_type = 3;
+    uint32 size_bytes = 4;
+    uint32 sequence_num = 5;
+    bool last_message = 6;
+  }
+
+  //@@ Response back to FC from application instructing FC to clear the
+  //@@ contents of the audio buffer (i.e. any buffered audio which has
+  //@@ not yet been played to the call). All audio buffer contents at the
+  //@@ time of receipt of this message will be cleared, and FC will
+  //@@ respond back to application with a request
+  //@@ NotifyAudioBufferClearedMessage echoing the id passed in the
+  //@@ application's ClearAudioBufferMessage
+  message ClearAudioBufferMessage { string id = 1; }
+
+  //@@ Response back to FC from application instructing FC to press a
+  //@@ DTMF digit on the call; the application generated unique id passed
+  //@@ in will be echoed back to application from FC in a subsequent
+  //@@ NotifyDTMFPressCompletedMessage request to the
+  //@@ application on this RPC stream
+  message PressDTMFMessage {
+    string id = 1;
+    //@@ [0-9*#abcd]
+    string dtmf_digits = 2;
+    //@@ duration in milliseconds to "press" a DTMF digit
+    //@@ duration should be between 1 and 8000
+    //@@ duration of 0 is invalid and will be ignored
+    //@@ duration of >8000 would be reduced to 8000
+    uint32 press_duration_ms = 3;
+    //@@ duration in milliseconds to delay before pressing another digit
+    uint32 break_duration_ms = 4;
+    uint32 sequence_num = 5;
+  }
+
+  //@@ Message back to FC from application instructing FC to return the
+  //@@ depth of the requested buffer
+  message QueryBufferDepthMessage {
+    BufferType buffer_type = 1;
+    enum BufferType {
+      DTMF = 0;
+      Audio = 1;
+    }
+  }
+
+  //@@ Response back to FC from application instructing FC to terminate
+  //@@ the call; upon terminating the call FC will deliver a final
+  //@@ NotifyCallEndedMessage request to application over this RPC stream
+  //@@ at which point both sides will tear down the stream and the
+  //@@ bidirectional streaming RPC is completed
+  message TerminateCallMessage {}
+
+  //@@ UNIMPLEMENTED, DO NOT USE
+  message EndGrpcStreamMessage {
+    // will override existing action url from initial AudioStream command
+    string action_url = 1;
+  }
+
+  oneof payload {
+    PlayAudioMessage audio_data = 1;
+    ClearAudioBufferMessage clear_audio_buffer = 2;
+    PressDTMFMessage dtmf_data = 3;
+    TerminateCallMessage terminate_call = 4;
+    EndGrpcStreamMessage end_stream = 5;
+    QueryBufferDepthMessage query_buffer = 6;
+  }
+}
