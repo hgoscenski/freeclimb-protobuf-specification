@@ -38,6 +38,9 @@ s ->> cw: Call Status webhook indicating completion reason
 
 ### Outbound Call
 
+To start the flow we will trigger an outdial to a PSTN location via the [Call Creation API](https://docs.freeclimb.com/reference/make-a-call) which will allow us to instantiate a call and then utilize PerCL to manage it.
+Once the call is established, a webhook to the specified `callConnectUrl` will fire and we can assume control of the call utilizing the AudioStream command.
+
 ```mermaid
 sequenceDiagram
 actor e as PSTN Location
